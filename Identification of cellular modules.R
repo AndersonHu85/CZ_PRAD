@@ -122,3 +122,47 @@ Heatmap(distance_matrix
         name = "Similarity",
 )
 dev.off()
+
+marker_merge %>% group_by(cluster) %>% top_n(10, avg_log2FC) -> top10
+top10$cluster <- gsub("-",".",top10$cluster, fixed = T)
+
+CM_1 <- top10$gene[top10$cluster %in% top_features_list$CM_01]
+CM_2 <- top10$gene[top10$cluster %in% top_features_list$CM_02]
+CM_3 <- top10$gene[top10$cluster %in% top_features_list$CM_03]
+CM_4 <- top10$gene[top10$cluster %in% top_features_list$CM_04]
+CM_5 <- top10$gene[top10$cluster %in% top_features_list$CM_05]
+CM_6 <- top10$gene[top10$cluster %in% top_features_list$CM_06]
+CM_7 <- top10$gene[top10$cluster %in% top_features_list$CM_07]
+CM_8 <- top10$gene[top10$cluster %in% top_features_list$CM_08]
+CM_9 <- top10$gene[top10$cluster %in% top_features_list$CM_09]
+CM_10 <- top10$gene[top10$cluster %in% top_features_list$CM_10]
+CM_11 <- top10$gene[top10$cluster %in% top_features_list$CM_11]
+
+cm_list <- lapply(paste0("CM_", 1:11), function(nm) get(nm))
+names(cm_list) <- paste0("CM_", 1:11)
+
+distance_matrix <- outer(cm_list, cm_list, FUN = Vectorize(function(x, y) {
+  intersection <- length(intersect(x, y))
+  union <- length(union(x, y))
+  if (union == 0) return(0)
+  intersection / union
+}))
+rownames(distance_matrix) <- paste0("CM_",1:11)
+colnames(distance_matrix) <- paste0("CM_",1:11)
+
+Heatmap(distance_matrix
+        ,col = colorRamp2(seq(0,0.3,length = 6),brewer.pal(11,"RdBu")[6:1]),
+        cluster_rows = F,
+        cluster_columns = F,
+        show_column_names = T,
+        show_row_names = T,
+        column_gap = unit(0, "mm"),
+        row_gap = unit(0, "mm"),
+        name = "Similarity",
+)                  
+
+
+
+
+                  
+                            
