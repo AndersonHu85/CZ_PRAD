@@ -1,0 +1,142 @@
+import numpy as np
+import scanpy as sc
+import anndata as ad
+import scanpy.external as sce
+import squidpy as sq
+import scniche as sn
+import torch
+import pandas as pd
+
+COSMX_CONFIGS = [
+    {
+        "name": "slice1",
+        "path": "./prostate/cosmx/czpca1/flatFiles/",
+        "counts_file": "exprMat_file.csv.gz",
+        "meta_file": "metadata_file.csv.gz",
+        "fov_file": "fov_positions_file.csv",
+    },
+    {
+        "name": "slice2",
+        "path": "./prostate/cosmx/czpca2/flatFiles/",
+        "counts_file": "exprMat_file.csv.gz",
+        "meta_file": "metadata_file.csv.gz",
+        "fov_file": "fov_positions_file.csv",
+    },
+]
+
+HARMONY_KEY = "patient"
+SAMPLE_KEY = "sample"
+CELLTYPE_KEY = "identity_subtype"
+
+CONTROL_PATTERNS = ("SystemControl", "Negative", "Unassigned", "BLANK")
+
+RANDOM_SEED = 0
+N_PCS = 30
+N_NEIGHBORS = 15
+
+MARKER_GENES = {
+    "Epithelial": ["KRT8", "KRT18", "KRT5", "EPCAM"],
+    "Immune": ["PTPRC", "CD3D", "CD68", "MS4A1"],
+    "Stromal": ["COL1A1", "DCN", "ACTA2"],
+    "Endothelial": ["PECAM1", "VWF", "CDH5"],
+}
+
+NICHE_NUMBER = 12
+NICHE_KEY = f"scNiche_{NICHE_NUMBER}"
+K_CUTOFF = 30
+BATCH_NUM = 100
+DEVICE = "cuda:0"
+
+sc.settings.verbosity = 1
+sc.settings.seed = RANDOM_SEED
+
+def read_cosmx(cfg):
+    a = sq.read.nanostring(
+        path=cfg["path"],
+        counts_file=cfg["counts_file"],
+        meta_file=cfg["meta_file"],
+        fov_file=cfg["fov_positions_file"],
+    )
+    a.obs["sample"] = cfg["name"]
+    return a
+
+
+adata1 = read_cosmx(COSMX_CONFIGS[0])
+adata2 = read_cosmx(COSMX_CONFIGS[1])
+
+def drop_control_genes(a):
+    keep = [g for g in a.var_names
+            if not any(p.lower() in str(g).lower() for p in CONTROL_PATTERNS)]
+    return a[:, keep].copy()
+
+
+adata1 = drop_control_genes(adata1)
+adata2 = drop_control_genes(adata2)
+
+for a in [adata1, adata2]:
+    if HARMONY_KEY in a.obs:
+        a.obs[HARMONY_KEY] = (a.obs[HARMONY_KEY].astype(str)
+                              .str.strip().str.replace(" ", "_"))
+    a.obs[SAMPLE_KEY] = a.obs[SAMPLE_KEY].astype("category")
+
+adata = ad.concat(
+    [adata1, adata2],
+    axis=0,
+    join="outer",
+    merge="unique",
+    index_unique="_",
+    label=None,
+)
+
+sc.pp.calculate_qc_metrics(adata, inplace=True)
+adata = adata[adata.obs["n_genes_by_counts"] >= 20, :].copy()
+
+adata.layers["counts"] = adata.X.copy()
+sc.pp.normalize_total(adata, target_sum=1e4)
+sc.pp.log1p(adata)
+sc.pp.pca(adata, n_comps=N_PCS, random_state=RANDOM_SEED)
+
+sce.pp.harmony_integrate(adata, key=HARMONY_KEY)
+
+sc.pp.neighbors(
+    adata,
+    n_neighbors=N_NEIGHBORS,
+    n_pcs=N_PCS,
+    use_rep="X_pca_harmony",
+    random_state=RANDOM_SEED,
+)
+sc.tl.umap(adata, random_state=RANDOM_SEED)
+
+sn.pp.set_seed(RANDOM_SEED)
+adata.layers["X_pca_harmony"] = adata.obsm["X_pca_harmony"]
+
+adata = sn.pp.process_multi_slices(
+    adata=adata,
+    celltype_key=CELLTYPE_KEY,
+    sample_key=SAMPLE_KEY,
+    mode="KNN",
+    k_cutoff=K_CUTOFF,
+    is_pca=True,
+    verbose=True,
+    layer_key="X_pca_harmony",
+)
+
+adata = sn.pp.prepare_data_batch(adata=adata, verbose=False, batch_num=BATCH_NUM)
+sn.tr.Runner_batch(adata=adata, device=DEVICE, verbose=False)
+
+adata = sn.tr.clustering(
+    adata=adata,
+    target_k=NICHE_NUMBER,
+    add_key=NICHE_KEY,
+)
+adata.obs[NICHE_KEY] = adata.obs[NICHE_KEY].astype("category")
+
+sn.pl.stacked_barplot(
+    adata, x_axis="sample", y_axis=NICHE_KEY, mode="proportion",
+    kwargs={"figsize": (8, 4), "save": "_niche_sample_bar.pdf"},
+)
+sn.pl.stacked_barplot(
+    adata, x_axis=CELLTYPE_KEY, y_axis=NICHE_KEY, mode="proportion",
+    kwargs={"figsize": (12, 4), "save": "_niche_celltype_bar.pdf"},
+)
+
